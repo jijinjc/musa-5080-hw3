@@ -21,66 +21,42 @@ library(gridExtra)
 library(knitr)
 library(kableExtra)
 library(tidycensus)
-library(classInt)   # for KDE and ML risk class intervals
+library(classInt)
+library(ggtext)
+library(reshape2)
+library(glue)
 # functions
 root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
-
 ```
 
 ```{r}
-policeDistricts <- 
+policeDistricts = 
   st_read("https://data.cityofchicago.org/api/geospatial/fthy-xz3r?method=export&format=GeoJSON") %>%
   st_transform('ESRI:102271') %>%
   dplyr::select(District = dist_num)
   
-policeBeats <- 
+policeBeats = 
   st_read("https://data.cityofchicago.org/api/geospatial/aerh-rz74?method=export&format=GeoJSON") %>%
   st_transform('ESRI:102271') %>%
-  dplyr::select(District = beat_num)
+  dplyr::select(District = beat_num) 
+  
 
-bothPoliceUnits <- rbind(mutate(policeDistricts, Legend = "Police Districts"), 
+bothPoliceUnits = rbind(mutate(policeDistricts, Legend = "Police Districts"), 
                          mutate(policeBeats, Legend = "Police Beats"))
 ```
 
 ```{r}
-crime22 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/Crimes_-_2022_20241015.csv")
-```
-
-```{r}
-unique(crime22$Primary.Type)
-
-counts = table(crime22$Primary.Type)
-
-counts = counts[order(counts, decreasing=T)]
-
-print(counts[1:15])
-```   
-
-```{r}
-crime22narc = crime22 %>%
-    filter(Primary.Type == "NARCOTICS") %>%
-    mutate(x = gsub("[()]", "", Location)) %>% 
-    separate(x,into= c("Y","X"), sep=",") %>%
-    mutate(X = as.numeric(X),Y = as.numeric(Y)) %>%
+crash18 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/Traffic_Crashes_-_2018.csv") %>%
+    dplyr::select(CRASH_RECORD_ID, CRASH_DATE, LATITUDE, LONGITUDE, LOCATION) %>%
     na.omit() %>%
-    st_as_sf(coords = c("X", "Y"), crs = 4326, agr = "constant")%>%
+    st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant")%>%
     st_transform('ESRI:102271') %>%
-    distinct() 
+    distinct()
 ```
 
 ```{r}
-unique(crime22narc$Description)
-
-counts = table(crime22narc$Description)
-
-counts = counts[order(counts, decreasing=T)]
-
-print(counts[1:15])
-```
-
-```{r}
-chicagoBoundary <- 
+chicagoBoundary = 
   st_read(file.path(root.dir,"/Chapter5/chicagoBoundary.geojson")) %>%
   st_transform('ESRI:102271') 
 ```
@@ -89,42 +65,464 @@ chicagoBoundary <-
 grid.arrange(ncol=2,
 ggplot() + 
   geom_sf(data = chicagoBoundary) +
-  geom_sf(data = crime22narc, colour="red", size=0.1, show.legend = "point") +
-  labs(title= "Narcrotics, Chicago - 2022") +
+  geom_sf(data = crash18, colour="red", size=0.1, show.legend = "point") +
+  labs(title= "Traffic Crashes, Chicago - 2018") +
   mapTheme(title_size = 14),
 
 ggplot() + 
   geom_sf(data = chicagoBoundary, fill = "grey40") +
-  stat_density2d(data = data.frame(st_coordinates(crime22narc)), 
+  stat_density2d(data = data.frame(st_coordinates(crash18)), 
                  aes(X, Y, fill = ..level.., alpha = ..level..),
-                 size = 0.01, bins = 40, geom = 'polygon') +
+                 size = 0.01, bins = 70, geom = 'polygon') +
   scale_fill_viridis() +
-  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
-  labs(title = "Density of Narcrotics") +
+  scale_alpha(range = c(0.00, 0.5), guide = FALSE) +
+  labs(title = "Density of Traffic Crashes in Chicago") +
   mapTheme(title_size = 14) + theme(legend.position = "none"))
 ```
 
 ```{r}
-fishnet <- 
+fishnet = 
   st_make_grid(chicagoBoundary,
-               cellsize = 1000, 
+               cellsize = 500, 
                square = TRUE) %>%
   .[chicagoBoundary] %>%            # fast way to select intersecting polygons
   st_sf() %>%
   mutate(uniqueID = 1:n())
 
-crime_net <- 
-  dplyr::select(crime22narc) %>% 
-  mutate(countNarc = 1) %>% 
+crash_net = 
+  dplyr::select(crash18) %>% 
+  mutate(countCrash = 1) %>% 
   aggregate(., fishnet, sum) %>%
-  mutate(countNarc = replace_na(countNarc, 0),
+  mutate(countCrash = replace_na(countCrash, 0),
          uniqueID = 1:n(),
          cvID = sample(round(nrow(fishnet) / 24), 
                        size=nrow(fishnet), replace = TRUE))
 
 ggplot() +
-  geom_sf(data = crime_net, aes(fill = countNarc), color = NA) +
+  geom_sf(data = crash_net, aes(fill = countCrash), color = NA) +
   scale_fill_viridis() +
-  labs(title = "Count of Burglaires for the fishnet") +
+  labs(title = "Count of Traffic Crash Incidents with fishnet") +
   mapTheme()
+```
+
+```{r load other indicators}
+bars = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/bars.csv") %>%
+  dplyr::select(ADDRESS, ZIP.CODE, LATITUDE, LONGITUDE, LOCATION) %>%
+  na.omit() %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant")%>%
+  st_transform(st_crs(fishnet)) %>%
+  distinct() %>%
+  mutate(LEGEND = 'Bars')
+
+potholes = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/311_Service_Requests_-_Pot_Holes_Reported_-_Historical_20241016.csv")%>%
+  dplyr::select(SERVICE.REQUEST.NUMBER, LATITUDE, LONGITUDE, LOCATION) %>%
+  rename(SERVICEID = SERVICE.REQUEST.NUMBER) %>%
+  na.omit() %>%
+  mutate(LEGEND = 'Potholes')
+
+downlights = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/311_Service_Requests_-_Street_Lights_-_All_Out_-_Historical_20241016.csv") %>%
+  dplyr::select(Service.Request.Number, Latitude, Longitude, Location) %>%
+  rename(SERVICEID = Service.Request.Number,
+         LATITUDE = Latitude,
+         LONGITUDE = Longitude,
+         LOCATION = Location) %>%
+  na.omit() %>%
+  mutate(LEGEND = 'Broken_Lights')
+
+hazards = full_join(potholes, downlights, by=names(potholes)) %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant") %>%
+  st_transform(st_crs(fishnet)) %>%
+  distinct()
+```
+
+```{r}
+neighborhoods = 
+  st_read("https://raw.githubusercontent.com/blackmad/neighborhoods/master/chicago.geojson") %>%
+  st_transform(st_crs(fishnet)) 
+```
+
+```{r}
+bars_net = bars %>%
+  st_join(fishnet, join=st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID, LEGEND) %>%
+  summarize(count = n()) %>%
+  left_join(fishnet, ., by = "uniqueID") %>%
+  spread(LEGEND, count, fill=0) %>%
+  dplyr::select(-`<NA>`) %>%
+  ungroup() 
+
+bars_net = bars_net %>%
+  mutate(bars.nn = nn_function(st_coordinates(st_centroid(bars_net)), 
+                                           st_coordinates(bars),
+                                           k = 5))
+
+hazard_net = hazards %>%
+  st_join(fishnet, join=st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID, LEGEND) %>%
+  summarize(count = n()) %>%
+  left_join(fishnet, ., by = "uniqueID") %>%
+  spread(LEGEND, count, fill=0) %>%
+  mutate(totHazards = Broken_Lights + Potholes) %>%
+  dplyr::select(-`<NA>`) %>%
+  ungroup()
+
+hazard_net = hazard_net %>%
+  mutate(hazards.nn = nn_function(st_coordinates(st_centroid(hazard_net)), 
+                                           st_coordinates(hazards),
+                                           k = 1))
+```
+
+```{r}
+bars_net.long.nn = 
+  dplyr::select(bars_net, ends_with(".nn")) %>%
+    gather(Variable, value, -geometry)
+
+hazard_net.long.nn = 
+  dplyr::select(hazard_net, ends_with(".nn")) %>%
+    gather(Variable, value, -geometry)
+```
+
+```{r}
+grid.arrange(ncol=2,
+ggplot() +
+      geom_sf(data = bars_net.long.nn, aes(fill=value), colour=NA) +
+      scale_fill_viridis(name="NN Distance") +
+      labs(title="Bars NN Distance") +
+      mapTheme(),
+
+ggplot() +
+      geom_sf(data = hazard_net.long.nn, aes(fill=value), colour=NA) +
+      scale_fill_viridis(name="NN Distance") +
+      labs(title="Hazards NN Distance") +
+      mapTheme()
+)
+```
+
+```{r}
+final_net =
+  left_join(crash_net, st_drop_geometry(bars_net), by="uniqueID") %>%
+  left_join(st_drop_geometry(hazard_net), by="uniqueID")
+
+```
+
+```{r}
+final_net =
+  st_centroid(final_net) %>%
+  st_join(dplyr::select(neighborhoods, name), by = "uniqueID") %>%
+  st_join(dplyr::select(policeDistricts, District), by = "uniqueID") %>%
+  st_drop_geometry() %>%
+  left_join(dplyr::select(final_net, geometry, uniqueID)) %>%
+  st_sf() %>%
+  mutate(totHazards = Broken_Lights + Potholes) %>%
+  na.omit()
+```
+
+```{r}
+final_net.nb = poly2nb(as_Spatial(final_net), queen=TRUE)
+
+final_net.weights = nb2listw(final_net.nb, style="W", zero.policy=TRUE)
+
+lm_bar = localmoran(final_net$Bars, final_net.weights, zero.policy=TRUE) %>% 
+  as.data.frame()
+
+lm_haz = localmoran(final_net$totHazards, final_net.weights, zero.policy=TRUE) %>% 
+  as.data.frame()
+
+final_net.lm = 
+  cbind(lm_bar, lm_haz, as.data.frame(final_net)) %>% 
+  st_sf() %>%
+  dplyr::select(Bars_count = Bars, 
+                Hazards_count = totHazards,
+                Local_Morans_I = Ii, 
+                P_Value = `Pr(z != E(Ii))`) %>%
+  mutate(Significant_Hotspots = ifelse(P_Value <= 0.001, 1, 0)) %>%
+  gather(Variable, Value, -geometry)
+```
+
+```{r morans i, fig.height=4, fig.width=7}
+vars = unique(final_net.lm$Variable)
+varlist = list()
+
+for(i in vars){
+  varlist[[i]] = 
+    ggplot() +
+      geom_sf(data = filter(final_net.lm, Variable == i), 
+              aes(fill = Value), colour=NA) +
+      scale_fill_viridis(name="") +
+      labs(title=i) +
+      mapTheme(title_size = 8) + 
+    theme(plot.title = element_text(hjust = 0.5), 
+          plot.margin = margin(5, 5, 5, 5),
+          legend.position="bottom")}
+
+do.call(grid.arrange,c(varlist, ncol = 5, top = "Local Morans I statistics for Traffic Crashes"))
+```
+
+```{r}
+final_net =
+  final_net %>% 
+  mutate(crash.isSig = 
+           ifelse(localmoran(final_net$countCrash, 
+                             final_net.weights, zero.policy=TRUE)[,5] <= 0.0000001, 1, 0)) %>%
+  mutate(crash.isSig.dist = 
+           nn_function(st_coordinates(st_centroid(final_net)),
+                       st_coordinates(st_centroid(
+                         filter(final_net, crash.isSig == 1))), 1))
+```
+
+```{r correlations, fig.height=20}
+correlation.long =
+  st_drop_geometry(final_net) %>%
+  dplyr::select(-uniqueID, -cvID,  -name) %>%
+  gather(Variable, Value, -countCrash) %>%
+  mutate(Value = as.numeric(Value))
+
+correlation.cor =
+  correlation.long %>%
+  group_by(Variable) %>%
+  summarize(correlation = cor(Value, countCrash, use = "complete.obs"))
+
+ggplot(correlation.long, aes(Value, countCrash)) +
+  geom_point(size = 0.1) +
+  geom_text(data = correlation.cor, aes(label = paste("r =", round(correlation, 2))),
+            x=-Inf, y=Inf, vjust = 1.5, hjust = -.1) +
+  geom_smooth(method = "lm", se = FALSE, colour = "black") +
+  facet_wrap(~Variable, ncol = 2, scales = "free") +
+  labs(title = "Traffic Crash count as a function of risk factors") +
+  plotTheme()
+```
+
+```{r}
+reg.vars = c("bars.nn", "hazards.nn")
+
+reg.ss.vars = c("bars.nn", "hazards.nn", "crash.isSig", "crash.isSig.dist")
+```
+
+```{r results='hide', warning=FALSE, message=FALSE}
+reg.cv = crossValidate(
+  dataset = final_net,
+  id = "cvID",
+  dependentVariable = "countCrash",
+  indVariables = reg.vars) %>%
+  dplyr::select(cvID = cvID, countCrash, Prediction, geometry)
+
+reg.spatialCV = crossValidate(
+  dataset = final_net,
+  id = "name",
+  dependentVariable = "countCrash",
+  indVariables = reg.vars) %>%
+  dplyr::select(cvID = name, countCrash, Prediction, geometry)
+
+reg.ss.cv = crossValidate(
+  dataset = final_net,
+  id = "cvID",
+  dependentVariable = "countCrash",
+  indVariables = reg.ss.vars) %>%
+  dplyr::select(cvID = cvID, countCrash, Prediction, geometry)
+
+reg.ss.spatialCV = crossValidate(
+  dataset = final_net,
+  id = "name",
+  dependentVariable = "countCrash",
+  indVariables = reg.ss.vars) %>%
+  dplyr::select(cvID = name, countCrash, Prediction, geometry)
+
+reg.summary = 
+  rbind(
+    mutate(reg.cv,           Error = Prediction - countCrash,
+           Regression = "Random k-fold CV: Just Risk Factors"),
+    
+    mutate(reg.ss.cv,        Error = Prediction - countCrash,
+           Regression = "Random k-fold CV: Spatial Process"),
+    
+    mutate(reg.spatialCV,    Error = Prediction - countCrash,
+           Regression = "Spatial LOGO-CV: Just Risk Factors"),
+    
+    mutate(reg.ss.spatialCV, Error = Prediction - countCrash,
+           Regression = "Spatial LOGO-CV: Spatial Process")) %>%
+  st_sf() 
+```
+
+```{r mae kfold and logocv, fig.width=12, fig.height=8}
+error_by_reg_and_fold = 
+  reg.summary %>%
+  group_by(Regression, cvID) %>% 
+  summarize(Mean_Error = mean(Prediction - countCrash, na.rm = T),
+            MAE = mean(abs(Mean_Error), na.rm = T),
+            SD_MAE = mean(abs(Mean_Error), na.rm = T)) %>%
+  ungroup()
+
+error_by_reg_and_fold %>%
+  ggplot(aes(MAE)) + 
+  geom_histogram(bins = 30, colour="black", fill = "#FDE725FF") +
+  facet_wrap(~Regression) +  
+  geom_vline(xintercept = 0) + scale_x_continuous(breaks = seq(0, 8, by = 1)) + 
+  labs(title="Distribution of MAE", subtitle = "k-fold cross validation vs. LOGO-CV",
+       x="Mean Absolute Error", y="Count") +
+  theme(
+    axis.text.x = element_blank(), 
+  ) +
+  plotTheme()
+```
+
+```{r mae map, fig.width=8, fig.height=5}
+error_by_reg_and_fold %>%
+  group_by(Regression) %>%
+  ggplot() +
+  geom_sf(aes(fill = MAE)) +
+  facet_wrap(~Regression, ncol = 4) +  # Arrange all plots in 1 row (4 columns)
+  scale_fill_viridis() +
+  labs(title = "Error of Crashes via Usage of LOGO-CV Regression") +
+  mapTheme(title_size = 10) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    plot.margin = margin(5, 5, 5, 5),
+    legend.position = "bottom",
+    strip.text.x = element_text(size = 8)  # Adjust facet title size
+  )
+```
+
+```{r mae table}
+st_drop_geometry(error_by_reg_and_fold) %>%
+  group_by(Regression) %>% 
+  summarize(Mean_MAE = round(mean(MAE), 2),
+            SD_MAE = round(sd(MAE), 2)) %>%
+  kable() %>%
+  kable_styling("striped", full_width = F) %>%
+  row_spec(2, color = "black", background = "#FDE725FF") %>%
+  row_spec(4, color = "black", background = "#FDE725FF") 
+```
+
+```{r}
+st_drop_geometry(reg.summary) %>%
+  group_by(Regression) %>%
+  mutate(Crash_Decile = ntile(countCrash, 10)) %>%
+  group_by(Regression, Crash_Decile) %>%
+  summarize(meanObserved = mean(countCrash, na.rm = T),
+            meanPrediction = mean(Prediction, na.rm = T)) %>%
+  gather(Variable, Value, -Regression, -Crash_Decile) %>%
+  ggplot(aes(Crash_Decile, Value, colour = Variable)) +  # Map color to Variable
+  geom_point(size = 2) + 
+  geom_path(aes(group = Crash_Decile), colour = "black") +
+  scale_color_manual(values = c("#006d2c", "#74c476")) +  # Use different colors
+  facet_wrap(~Regression) +
+  xlim(0, 10) +
+  theme(
+    plot.title = element_markdown(size = 14, face = "bold", hjust=0.5),
+    plot.margin = margin(5, 5, 5, 5),
+    strip.text.x = element_text(size = 8),
+    legend.position = "none"
+  ) +
+  labs(title = "<span style = 'color:#006d2c;'>Predicted</span> and <span style = 'color:#74c476;'>Observed</span> Crash by Observed Crash Decil")
+```
+
+```{r}
+crash.ppp.18 <- as.ppp(st_coordinates(crash18), W = st_bbox(final_net))
+crash.kd.18 <- density.ppp(crash.ppp.18, 1000)
+
+as.data.frame(crash.kd.18) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
+  aggregate(., final_net, mean) %>%
+   ggplot() +
+     geom_sf(aes(fill=value)) +
+     geom_sf(data = sample_n(crash18, 1500), size = .5) +
+     scale_fill_viridis(name = "Density") +
+     labs(title = "Kernel density of Traffic Crash in 2018, Chicago") +
+     mapTheme()
+```
+
+```{r}
+crash19 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/Traffic_Crashes_-_2019.csv") %>%
+    dplyr::select(CRASH_RECORD_ID, CRASH_DATE, LATITUDE, LONGITUDE, LOCATION) %>%
+    na.omit() %>%
+    st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant")%>%
+    st_transform('ESRI:102271') %>%
+    distinct()
+
+crash.ppp.19 <- as.ppp(st_coordinates(crash19), W = st_bbox(final_net))
+crash.kd.19 <- density.ppp(crash.ppp.19, 1000)
+
+as.data.frame(crash.kd.19) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
+  aggregate(., final_net, mean) %>%
+   ggplot() +
+     geom_sf(aes(fill=value)) +
+     geom_sf(data = sample_n(crash19, 1500), size = .5) +
+     scale_fill_viridis(name = "Density") +
+     labs(title = "Kernel density of Traffic Crash in 2019, Chicago") +
+     mapTheme()
+```
+
+```{r}
+crash.kd.sf.19 <- as.data.frame(crash.kd.19) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
+  aggregate(., final_net, mean) %>%
+  mutate(label = "Kernel Density",
+         Risk_Category = ntile(value, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  cbind(
+    aggregate(
+      dplyr::select(crash19) %>% mutate(CrashCount = 1), ., sum) %>%
+    mutate(CrashCount = replace_na(CrashCount, 0))) %>%
+  dplyr::select(label, Risk_Category, CrashCount)
+
+crash.risk.sf <-
+  filter(reg.summary, Regression == "Random k-fold CV: Spatial Process") %>%
+  mutate(label = "Risk Predictions",
+         Risk_Category = ntile(Prediction, 100),
+         Risk_Category = case_when(
+           Risk_Category >= 90 ~ "90% to 100%",
+           Risk_Category >= 70 & Risk_Category <= 89 ~ "70% to 89%",
+           Risk_Category >= 50 & Risk_Category <= 69 ~ "50% to 69%",
+           Risk_Category >= 30 & Risk_Category <= 49 ~ "30% to 49%",
+           Risk_Category >= 1 & Risk_Category <= 29 ~ "1% to 29%")) %>%
+  cbind(
+    aggregate(
+      dplyr::select(crash19) %>% mutate(CrashCount = 1), ., sum) %>%
+      mutate(CrashCount = replace_na(CrashCount, 0))) %>%
+  dplyr::select(label,Risk_Category, CrashCount)
+```
+
+```{r}
+rbind(crash.kd.sf.19, crash.risk.sf) %>%
+  na.omit() %>%
+  gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
+  ggplot() +
+    geom_sf(aes(fill = Risk_Category), colour = NA) +
+    geom_sf(data = sample_n(crash19, 3000), size = .5, colour = "black") +
+    facet_wrap(~label, ) +
+    scale_fill_viridis(discrete = TRUE) +
+    labs(title="Comparison of Kernel Density and Risk Predictions",
+         subtitle="2018 Traffic Crash Risk Predictions vs 2019 Crashes") +
+    mapTheme()
+```
+
+```{r}
+rbind(crash.kd.sf.19, crash.risk.sf) %>%
+  st_set_geometry(NULL) %>% na.omit() %>%
+  gather(Variable, Value, -label, -Risk_Category) %>%
+  group_by(label, Risk_Category) %>%
+  summarize(countCrash = sum(Value)) %>%
+  ungroup() %>%
+  group_by(label) %>%
+  mutate(Rate_of_test_set_crash = countCrash / sum(countCrash)) %>%
+    ggplot(aes(Risk_Category,Rate_of_test_set_crash)) +
+      geom_bar(aes(fill=label), position="dodge", stat="identity") +
+      scale_fill_manual(values = c("#756bb1", "#fff200")) + 
+      labs(title = "") +
+      plotTheme() + 
+      theme(axis.text.x = element_text(angle = 45, vjust = 0.5),
+      plot.title = element_markdown(size = 14, face = "bold", hjust=0.5),
+      plot.margin = margin(5, 5, 5, 5),
+      strip.text.x = element_text(size = 8),
+      #legend.position = "none"
+      ) +
+      labs(title = "<span style = 'color:#d4ca13;'>Risk Prediction</span> vs. <span style = 'color:#756bb1;'>Kernel Density</span> for 2019 Traffic Crashes")
 ```
