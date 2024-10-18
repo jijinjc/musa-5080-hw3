@@ -1,9 +1,19 @@
 ---
-title: "Week 3"
+title: "Geospatial Risk Prediction"
 author: "Jack Chen"
 date: "2024-10-12"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
 ---
+
+# Introduction
+
+The focus of this analysis will be on traffic crashes in Chicago, as travel is a very frequent action that people takes in their day to day life, and Chicago is a city that has very vehicle-oriented travel methods. Traffic crashes are influenced by a variety of factors, such as weather conditions, road infrastructure, and driver behavior. By studying the traffic crash in the city as well as highlight the potential risk factors that may have an affect on the traffic crash numbers, it is possible prevent or mitigate the risk of these incidents. However, bias could arise particularly when crashes are reported more frequently in areas with better surveillance or where residents are more likely to report incidents. For example, burglaries in Chicago is one of the most commonly recorded crime in open data, and there can be potential bias related to abandoned cars. This bias could have skewed crime data in specific neighborhoods, thus resulting in a large amount of recorded burglary cases. For traffic crashes, the issue of bias may be more significant, as there could be over-reporting around biases such as poor road conditions or drunk driving, leading to an inaccurate understanding of traffic safety across the city entirety of the city.
+
+To do this, we will be looking at data from the [Chicago Data Portal](https://data.cityofchicago.org/), by collecting 2018 data for [traffic crashes](https://data.cityofchicago.org/Transportation/Traffic-Crashes-Crashes/85ca-t3if/about_data), [bar locations](https://data.cityofchicago.org/Community-Economic-Development/bars/x7bm-cj66/about_data), as well as poor road conditions such as [broken street lights](https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Street-Lights-All-Out-Histori/zuxi-7xem/about_data) and [pot holes](https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Pot-Holes-Reported-Historical/7as2-ds3y/about_data). We will also be collecting 2019 data for traffic crashes to use near the end of the analysis to compare with the model that we will be creating to help with our predictions.
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE)
@@ -30,7 +40,13 @@ root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analyti
 source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
 ```
 
-```{r}
+# Data Wrangling
+
+## Police Data
+
+We will first be downloading the data for Chicago's boundary, police districts and police beats. This different types of police administrative areas help us look at the analysis of traffic crashes at different granularities.
+
+```{r police data, message=FALSE, warning=FALSE, results='hide'}
 policeDistricts = 
   st_read("https://data.cityofchicago.org/api/geospatial/fthy-xz3r?method=export&format=GeoJSON") %>%
   st_transform('ESRI:102271') %>%
@@ -44,9 +60,17 @@ policeBeats =
 
 bothPoliceUnits = rbind(mutate(policeDistricts, Legend = "Police Districts"), 
                          mutate(policeBeats, Legend = "Police Beats"))
+
+chicagoBoundary = 
+  st_read(file.path(root.dir,"/Chapter5/chicagoBoundary.geojson")) %>%
+  st_transform('ESRI:102271') 
 ```
 
-```{r}
+## Traffic Crash Data 2018
+
+We then will be downloading our main incident of analysis: traffic crashes. The data here has already been filtered using Chicago Data Portal's query data function, therefore we will not need to manually filter the data in R one more time, as the data is already filtered to only be for 2018. To make the data easier to view while working in the analysis, we will only be keeping the important data such as the id, date, latitude, longitude, and location.
+
+```{r crash data 2018, warning=FALSE, message=FALSE, results='hide'}
 crash18 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/Traffic_Crashes_-_2018.csv") %>%
     dplyr::select(CRASH_RECORD_ID, CRASH_DATE, LATITUDE, LONGITUDE, LOCATION) %>%
     na.omit() %>%
@@ -55,17 +79,15 @@ crash18 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs
     distinct()
 ```
 
-```{r}
-chicagoBoundary = 
-  st_read(file.path(root.dir,"/Chapter5/chicagoBoundary.geojson")) %>%
-  st_transform('ESRI:102271') 
-```
+## Traffic Crash Visualization
 
-```{r}
+With the crash data, we will do an initial visualization of the data to see exactly where the traffic crashes occur, as well as a density map of these crashes. The plot of traffic crashes shows that there are a lot of crash incidents in Chicago during 2018, but we can see more clearly that the density of these crashes happen near the loop within Chicago.
+
+```{r visualization of crashes, warning=FALSE, message=FALSE}
 grid.arrange(ncol=2,
 ggplot() + 
   geom_sf(data = chicagoBoundary) +
-  geom_sf(data = crash18, colour="red", size=0.1, show.legend = "point") +
+  geom_sf(data = crash18, colour="red", size=0.1, show.legend = "point", alpha = 0.5) +
   labs(title= "Traffic Crashes, Chicago - 2018") +
   mapTheme(title_size = 14),
 
@@ -80,7 +102,11 @@ ggplot() +
   mapTheme(title_size = 14) + theme(legend.position = "none"))
 ```
 
-```{r}
+## Fishnet Generation and Visualization
+
+Following the visualization of the location and density of the traffic crash locations, we can proceed to create our fishnet. The fishnet will be useed to represent spatial trend of traffic crash in a regression-ready form, and we will use the fishnet to visualize the traffic crash incidents for each grid cell. Again in this fishnet visualization, we see that Chicago's Loop sees the highest number of traffic crash incidents.
+
+```{r fishnet generation, warning=FALSE, message=FALSE}
 fishnet = 
   st_make_grid(chicagoBoundary,
                cellsize = 500, 
@@ -105,7 +131,11 @@ ggplot() +
   mapTheme()
 ```
 
-```{r load other indicators}
+## Loading Risk Factors
+
+Like previously mentioned, our risk factors will be focused around bars, pot holes, and broken street lights. Bars are used as a way to represent drunk drivers, possibly showing that people who leave bars are more likely to be drunk, and there is a risk of them driving while impaired. With pot holes and broken street lights, they are combined as one single indicator of poor road conditions, and can increase the likelihood of these dangerous incidents.
+
+```{r load other indicators, warning=FALSE, message=FALSE, results='hide'}
 bars = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/bars.csv") %>%
   dplyr::select(ADDRESS, ZIP.CODE, LATITUDE, LONGITUDE, LOCATION) %>%
   na.omit() %>%
@@ -133,15 +163,15 @@ hazards = full_join(potholes, downlights, by=names(potholes)) %>%
   st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326, agr = "constant") %>%
   st_transform(st_crs(fishnet)) %>%
   distinct()
-```
 
-```{r}
 neighborhoods = 
   st_read("https://raw.githubusercontent.com/blackmad/neighborhoods/master/chicago.geojson") %>%
   st_transform(st_crs(fishnet)) 
 ```
 
-```{r}
+With the risk factors loaded, we will be joining them with our fishnets such that we can better look at how the risk factors affect the traffic crashes that are prevalent in Chicago, and thus identify patterns in a much easier manner.
+
+```{r fishnet for bar and hazards, warning=FALSE, message=FALSE}
 bars_net = bars %>%
   st_join(fishnet, join=st_within) %>%
   st_drop_geometry() %>%
@@ -174,7 +204,11 @@ hazard_net = hazard_net %>%
                                            k = 1))
 ```
 
-```{r}
+## Nearest Neighbour Visualization
+
+For each traffic crash location, we calculated the average nearest neighbour distance to the 5 closest bars and the distance to the single closest hazard. By calculating nearest neighbour distances, we can improve the analysis by providing a smoother exposure relationship across space between our risk indicators and traffic crashes. We can see in the visualization that hazards are much more common near the traffic crash locations, whereas the distance between traffic crashes and the average distance to the nearest 5 bars can be close or relatively far.
+
+```{r nearest neighbours, warning=FALSE, message=FALSE}
 bars_net.long.nn = 
   dplyr::select(bars_net, ends_with(".nn")) %>%
     gather(Variable, value, -geometry)
@@ -182,9 +216,7 @@ bars_net.long.nn =
 hazard_net.long.nn = 
   dplyr::select(hazard_net, ends_with(".nn")) %>%
     gather(Variable, value, -geometry)
-```
 
-```{r}
 grid.arrange(ncol=2,
 ggplot() +
       geom_sf(data = bars_net.long.nn, aes(fill=value), colour=NA) +
@@ -200,14 +232,15 @@ ggplot() +
 )
 ```
 
-```{r}
+## Final Fishnet
+
+For our final feature engineering approach, we look at creating our finalized fishnet by using spatial join to combine the fishnet's centroids to Chicago's neighborhoods and police districts. We also join the crash and the risk feature counts together with the final net, and omit any NA grid cells.
+
+```{r wrangle final net, warning=FALSE, message=FALSE}
 final_net =
   left_join(crash_net, st_drop_geometry(bars_net), by="uniqueID") %>%
   left_join(st_drop_geometry(hazard_net), by="uniqueID")
 
-```
-
-```{r}
 final_net =
   st_centroid(final_net) %>%
   st_join(dplyr::select(neighborhoods, name), by = "uniqueID") %>%
@@ -219,29 +252,32 @@ final_net =
   na.omit()
 ```
 
-```{r}
+# Local Moran's I
+
+To gain a better understanding of the spatial patterns with traffic crashes, we need to use local Moran's I to evaluate whether or not traffic crashes are randomly distributed relative to their immediate neighbors. By using queen contiguity, we create a spatial weights matrix to connect each grid cell with its immediate neighbouring grid cells.
+
+```{r neighbour list and spatial weights matrix, warning=FALSE, message=FALSE}
 final_net.nb = poly2nb(as_Spatial(final_net), queen=TRUE)
 
 final_net.weights = nb2listw(final_net.nb, style="W", zero.policy=TRUE)
 
-lm_bar = localmoran(final_net$Bars, final_net.weights, zero.policy=TRUE) %>% 
+lm_crash = localmoran(final_net$countCrash, final_net.weights, zero.policy=TRUE) %>% 
   as.data.frame()
 
-lm_haz = localmoran(final_net$totHazards, final_net.weights, zero.policy=TRUE) %>% 
-  as.data.frame()
 
 final_net.lm = 
-  cbind(lm_bar, lm_haz, as.data.frame(final_net)) %>% 
+  cbind(lm_crash, as.data.frame(final_net)) %>% 
   st_sf() %>%
-  dplyr::select(Bars_count = Bars, 
-                Hazards_count = totHazards,
+  dplyr::select(Crash_count = countCrash, 
                 Local_Morans_I = Ii, 
                 P_Value = `Pr(z != E(Ii))`) %>%
   mutate(Significant_Hotspots = ifelse(P_Value <= 0.001, 1, 0)) %>%
   gather(Variable, Value, -geometry)
 ```
 
-```{r morans i, fig.height=4, fig.width=7}
+After calculating the local Moran’s I and visualizing the results, we can identify various traffic crash hot spots. The “significant hotspots” map on the far right shows that in those regions colored in yellow, crashed are archived more times than other areas not due to randomness (p \<= 0.01). The local Moran's I plot as well as p-value map suggests that, once again, the significant hot spots exist in the loop since the local Moran's I is higher near the loop and the p-value is practically 0 in the same area, and thus the patter is highlighted in the hot spot map, too.
+
+```{r morans i, fig.height=4, fig.width=7, warning=FALSE, message=FALSE}
 vars = unique(final_net.lm$Variable)
 varlist = list()
 
@@ -257,22 +293,32 @@ for(i in vars){
           plot.margin = margin(5, 5, 5, 5),
           legend.position="bottom")}
 
-do.call(grid.arrange,c(varlist, ncol = 5, top = "Local Morans I statistics for Traffic Crashes"))
+do.call(grid.arrange,c(varlist, ncol = 4, top = "Local Morans I statistics for Traffic Crashes"))
 ```
 
-```{r}
+## Significant Clusters
+
+After looking at the local Moran's I, we shift our focus to creating a dummy variable for significant clusters as well as looking at the average nearest neighbor distance from each final net cell centroid to its nearest significant cluster. This will allows us to model important information in regards to traffic crash's local spatial processes.
+
+```{r significant clusters and nn, warning=FALSE, message=FALSE}
 final_net =
   final_net %>% 
   mutate(crash.isSig = 
            ifelse(localmoran(final_net$countCrash, 
-                             final_net.weights, zero.policy=TRUE)[,5] <= 0.0000001, 1, 0)) %>%
+                             final_net.weights, zero.policy=TRUE)[,5] <= 0.001, 1, 0)) %>%
   mutate(crash.isSig.dist = 
            nn_function(st_coordinates(st_centroid(final_net)),
                        st_coordinates(st_centroid(
                          filter(final_net, crash.isSig == 1))), 1))
 ```
 
-```{r correlations, fig.height=20}
+# Correlation Plot
+
+We will also be using correlation plots to look at information in regards to features that may have an effect on our traffic crash counts. From our plots below, we can see that counts of all risk factors produced positive correlations, whereas their nearest neighbour distances produced negative correlations. These results show that if therer is an increase in the number of risk factors in close proximity, the higher the likelihood of a traffic crash occurring. Conversely, this would also mean that traffic crashes are less likely to occur.
+
+In fact, the correlation plots show that both the number of bars and the number of hazards proved to have quite a high relationship, possibly indicating that impaired driving and poor road conditions are both factors that we can assume has an impact on traffic crashes.
+
+```{r correlations, fig.height=16, warning=FALSE, message=FALSE, results='hide'}
 correlation.long =
   st_drop_geometry(final_net) %>%
   dplyr::select(-uniqueID, -cvID,  -name) %>%
@@ -294,13 +340,17 @@ ggplot(correlation.long, aes(Value, countCrash)) +
   plotTheme()
 ```
 
-```{r}
+# Cross-validation
+
+We also need to spatially cross validate our data and findings in order to test our generalizability. To do this, we will be using fields assigning a random `cvID` to each of the grid cells in `final_net` as well as neighbourhood name and police districts as three fields to use in applying a random k-fold cross-validation. 
+
+We will also be using ‘Leave-one-group-out’ cross-validation (LOGO-CV) where we hold-out each neighbourhood, and the model is trained on the remaining *n-1* areas. This way each neighborhood is used as a test case, and we are able to obtain both the observed and predicted traffic crash counts.
+
+```{r cross validation, results='hide', warning=FALSE, message=FALSE, results='hide'}
 reg.vars = c("bars.nn", "hazards.nn")
 
 reg.ss.vars = c("bars.nn", "hazards.nn", "crash.isSig", "crash.isSig.dist")
-```
 
-```{r results='hide', warning=FALSE, message=FALSE}
 reg.cv = crossValidate(
   dataset = final_net,
   id = "cvID",
@@ -345,7 +395,11 @@ reg.summary =
   st_sf() 
 ```
 
-```{r mae kfold and logocv, fig.width=12, fig.height=8}
+By using the two cross validation techniques mentioned above, we are able to produce the following results. For the Random k-fold cross validation, we can see that the MAE is generally lower for random k-fold cross validation compared to the same category when using LOGO-CV, therefore the model is relatively more consistent and not variable. Additionally, the cross validation using both risk factors and spatial processes performs more reliably than just the risk factors. This highlights the importance of spatial factors in our analysis, as they can greatly affect our traffic crash counts and the accuracy of these counts. 
+
+On the other hand, with the LOGO-CV method, the MAE compared to the random k-fold cross validation is significantly more spread out and have much higher values, showing that the accuracy of the former method is much lower than that of the latter. This unfortunately suggests that the model is much more variable and less consistent. However, we can still see a similar pattern that the LOGO-CV has that was observed in the random k-fold cv, in which the cross validation that considers spatial process has a lower variation, and thus smaller MAE compared to just considering the risk factors. Once again, this corroborates how important the spatial factors are for our prediction of traffic crash counts. The larger MAE displayed by the LOGO-CV also means that randomly splitting our data does not capture the importance of spatial dependencies well.
+
+```{r mae kfold and logocv, fig.width=12, fig.height=8, warning=FALSE, message=FALSE, results='hide'}
 error_by_reg_and_fold = 
   reg.summary %>%
   group_by(Regression, cvID) %>% 
@@ -367,7 +421,24 @@ error_by_reg_and_fold %>%
   plotTheme()
 ```
 
-```{r mae map, fig.width=8, fig.height=5}
+# Error Table
+
+In the table below, we are once again shown that spatial process features indeed improve our models, and that the spatial logo-cv has a notably higher mean MAE and standard deviation of MAE. The random k-fold cross validation results show a consistently better results, but the better results could be inflated since the method does not consider spatial correlation, and thus explains why the spatial LOGO-CV's more realistic assessment of the model's performance resulted in a higher MAE. The importance of spatial process is also displayed via the large change between the two mean MAE for both spatial LOGO-CVs, emphasizing the impact that spatial relationship has on analyzing traffic crashes and the importance of considering the factor.
+
+```{r mae table, results='hide', warning=FALSE, message=FALSE}
+st_drop_geometry(error_by_reg_and_fold) %>%
+  group_by(Regression) %>% 
+  summarize(Mean_MAE = round(mean(MAE), 2),
+            SD_MAE = round(sd(MAE), 2)) %>%
+  kable() %>%
+  kable_styling("striped", full_width = F) %>%
+  row_spec(2, color = "black", background = "#FDE725FF") %>%
+  row_spec(4, color = "black", background = "#FDE725FF") 
+```
+
+The map below extends the table, and shows the errors of each regression method. We see that in general the random k-fold cross validation is relatively monotone, showing that errors are evenly dispersed across Chicago, whereas the spatial LOGO-CV maps show higher MAEs near the Loop in Chicgao. 
+
+```{r mae map, fig.width=8, fig.height=5, warning=FALSE, message=FALSE,}
 error_by_reg_and_fold %>%
   group_by(Regression) %>%
   ggplot() +
@@ -384,18 +455,11 @@ error_by_reg_and_fold %>%
   )
 ```
 
-```{r mae table}
-st_drop_geometry(error_by_reg_and_fold) %>%
-  group_by(Regression) %>% 
-  summarize(Mean_MAE = round(mean(MAE), 2),
-            SD_MAE = round(sd(MAE), 2)) %>%
-  kable() %>%
-  kable_styling("striped", full_width = F) %>%
-  row_spec(2, color = "black", background = "#FDE725FF") %>%
-  row_spec(4, color = "black", background = "#FDE725FF") 
-```
+# Prediction Accuracy
 
-```{r}
+By looking at the figure below, we can generally see that the trend for all four models show that predictions are high for areas with lower traffic crash counts, whereas hot spots with higher traffic crashes tend to be underpredicted. The large difference in predicted and observed values in hotspot areas could likely represent the lack of ability in predicting hotspot areas accurately, whereas the higher prediction over observed values could be a result of overgeneralization.
+
+```{r predicted vs observed crash, results='hide', warning=FALSE, message=FALSE}
 st_drop_geometry(reg.summary) %>%
   group_by(Regression) %>%
   mutate(Crash_Decile = ntile(countCrash, 10)) %>%
@@ -415,10 +479,14 @@ st_drop_geometry(reg.summary) %>%
     strip.text.x = element_text(size = 8),
     legend.position = "none"
   ) +
-  labs(title = "<span style = 'color:#006d2c;'>Predicted</span> and <span style = 'color:#74c476;'>Observed</span> Crash by Observed Crash Decil")
+  labs(title = "<span style = 'color:#74c476;'>Predicted</span> and <span style = 'color:#006d2c;'>Observed</span> Crash by Observed Crash Decile")
 ```
 
-```{r}
+## Kernel Density Plots
+
+We will be using Kernel Density Estimations (KDE) to model the spatial distribution of traffic crashes and identify areas of high concentration. Additionally, we will be  able to use KDE to visualize the highest density locations and gradually smooths and decreases the probability of traffic crash occurrences as the distance from the point increases. In general, we once again see the pattern of the high density being the Chicago Loop, and there being no other high density locations.
+
+```{r kernel density 2018, warning=FALSE, message=FALSE}
 crash.ppp.18 <- as.ppp(st_coordinates(crash18), W = st_bbox(final_net))
 crash.kd.18 <- density.ppp(crash.ppp.18, 1000)
 
@@ -433,7 +501,7 @@ as.data.frame(crash.kd.18) %>%
      mapTheme()
 ```
 
-```{r}
+```{r kernel density 2019, warning=FALSE, message=FALSE, include=FALSE}
 crash19 = read.csv("https://raw.githubusercontent.com/jijinjc/musa-5080-hw3/refs/heads/main/Assignment%20Data%20Files/Traffic_Crashes_-_2019.csv") %>%
     dplyr::select(CRASH_RECORD_ID, CRASH_DATE, LATITUDE, LONGITUDE, LOCATION) %>%
     na.omit() %>%
@@ -455,7 +523,9 @@ as.data.frame(crash.kd.19) %>%
      mapTheme()
 ```
 
-```{r}
+We then need to check the effectiveness of our model, and thus use a goodness of fit indicator to illustrate whether the risk prediction model is more robust tool by evaluating whether the 2018 kernel density or risk predictions capture more of the 2019 traffic crash incidents. By aligning the 2018 predictions and 2019 observed traffic crash locations, we can visualize whether or not the predictions overlap with the observed data. By using this approach, we are able to determine which method between the KDE or risk-based model is better at predicting traffic crash incidents. 
+
+```{r kernel and risk creation, warning=FALSE, message=FALSE, results='hide'}
 crash.kd.sf.19 <- as.data.frame(crash.kd.19) %>%
   st_as_sf(coords = c("x", "y"), crs = st_crs(final_net)) %>%
   aggregate(., final_net, mean) %>%
@@ -490,7 +560,9 @@ crash.risk.sf <-
   dplyr::select(label,Risk_Category, CrashCount)
 ```
 
-```{r}
+Based on the resulting graph shown below, we can see that there are some major differences between our model and the kernel density model. While both maps show a cluster of highest risk in the Chicago Loop, the distribution is quite different. Our predictors actually show that there is generally lower risk in the South than that in the Kernel Density, and that higher risks pertain across Northern Chicago. Furthermore, the Kernel Density map shows two other smaller clusters of the highest risk, whereas our risk predictions model show the highest risk locations to be a bit more spread out. The Kernel Density map also shows two clusters in the South that our model does not.
+
+```{r kernel vs risk map, warning=FALSE, message=FALSE, results='hide'}
 rbind(crash.kd.sf.19, crash.risk.sf) %>%
   na.omit() %>%
   gather(Variable, Value, -label, -Risk_Category, -geometry) %>%
@@ -504,7 +576,9 @@ rbind(crash.kd.sf.19, crash.risk.sf) %>%
     mapTheme()
 ```
 
-```{r}
+Finally, to quantitatively visualize the difference between the Kernel Density and our Risk predictions, we created a bar plot to compare how well the two models model captures traffic crash incidents across different risk categories. We can see that generally our risk prediction is able to outperform Kernel Density for risk areas of less than 50%, and unfortunately underperforms compared to Kernel Density if the risk areas are higher than 50%. This would suggest that our risk prediction models do nnot offer an approach for allocating police resources to high risk locations efficiently.
+
+```{r risk vs kernel bar, warning=FALSE, message=FALSE}
 rbind(crash.kd.sf.19, crash.risk.sf) %>%
   st_set_geometry(NULL) %>% na.omit() %>%
   gather(Variable, Value, -label, -Risk_Category) %>%
@@ -522,7 +596,15 @@ rbind(crash.kd.sf.19, crash.risk.sf) %>%
       plot.title = element_markdown(size = 14, face = "bold", hjust=0.5),
       plot.margin = margin(5, 5, 5, 5),
       strip.text.x = element_text(size = 8),
-      #legend.position = "none"
+      legend.position = "none"
       ) +
       labs(title = "<span style = 'color:#d4ca13;'>Risk Prediction</span> vs. <span style = 'color:#756bb1;'>Kernel Density</span> for 2019 Traffic Crashes")
 ```
+
+# Conclusion
+
+Through this analysis of predictive models in regards to traffic crash incidents in Chicago, we were able to discover several key findings that could help in enhancing predictive accuracy. More specifically, our analysis indicates the importance of spatial process variables such as proximity to hotspots in the predictive models, as it significantly increases the performance from just using risk factors. However, despite these findings, the model at its current stage should not recommendbe to the local police to deter traffic crash incidents. While the algorithm shows potential in identifying high-risk areas and patterns using geospatial data, there are several concerns that need to be addressed before deployment.
+
+Unfortunately, the accuracy and reliability of the predictions are still uncertain. When pitched against the traditional Kernel Density estimation, our model fell short when predicting the traffic crashes in a future year for many of the higher risk category locations in Chicago. Additionally, the model seemed both over and under estimate traffic crash counts, which would result in highly inefficient allocation of police resources.
+
+Therefore, I would recommend further refinement and testing of the model before considering any practical application by law enforcement agencies. Future analysis can focus on including larger and more diverse datasets to improve accuracy, such as aspects like traffic congestion, or differentiation between vehicle to vehicle crashes and vehicle to pedestrian crashes. By implementing more datasets, it is highly possible that we can increase the accuracy of the model to possibly be implemented in helping control traffic crash incidents.
